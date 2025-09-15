@@ -1,0 +1,21 @@
+[
+    {
+        "key": "key_1",
+        "value": "val_1"
+    },
+    {
+        "key": "key_2",
+        "value": {
+            "type": "object",
+            "value": "some data"
+        }
+    },
+    {
+        "key": "key_3",
+        "value": [
+            "element_1",
+            "element_2",
+            "element_3"
+        ]
+    }
+]
