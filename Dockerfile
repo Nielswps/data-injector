@@ -9,7 +9,7 @@ COPY . .
 
 RUN CGO_ENABLED=0 go build -ldflags="-s -w -trimpath" -o /go-redis-tool .
 
-FROM alpine:3.19
+FROM alpine:3.22
 
 WORKDIR /
 
