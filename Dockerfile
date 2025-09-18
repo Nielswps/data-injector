@@ -7,12 +7,12 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 go build -ldflags="-s -w -trimpath" -o /go-redis-tool .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /data-injector .
 
 FROM alpine:3.22
 
 WORKDIR /
 
-COPY --from=builder /go-redis-tool .
+COPY --from=builder /data-injector .
 
 ENTRYPOINT ["/data-injector"]
