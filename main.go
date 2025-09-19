@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 	redis "github.com/redis/go-redis/v9"
@@ -67,9 +68,11 @@ func run(cfg Config) error {
 
 	ctx := context.Background()
 
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		return fmt.Errorf("could not connect to Redis: %w", err)
+	err := pingRedis(ctx, rdb)
+	if err != nil {
+		return fmt.Errorf("could not ping redis at: '%s' after retries. Failing", cfg.RedisConfigPath)
 	}
+
 	fmt.Println("Successfully connected to Redis!")
 
 	data, err := os.ReadFile(cfg.DataPath)
@@ -90,5 +93,21 @@ func run(cfg Config) error {
 	}
 
 	fmt.Println("Data successfully written to Redis as JSON.")
+	return nil
+}
+
+func pingRedis(ctx context.Context, rdb *redis.Client) error {
+	maxAttempts := 10
+	attempt := 1
+	for attempt < maxAttempts {
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			fmt.Println(fmt.Errorf("could not connect to Redis: %w", err))
+			time.Sleep(3 * time.Second)
+		}
+		attempt += 1
+	}
+	if attempt == maxAttempts {
+		return fmt.Errorf("unable to connecton to redis at %s", rdb.Options().Addr)
+	}
 	return nil
 }
