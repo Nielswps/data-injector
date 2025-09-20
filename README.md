@@ -13,11 +13,23 @@ If you just want to test how the tool works, you can run the following command t
 go run . --redis-address=127.0.0.1:6388 --data-file=./example/example_data.json
 ```
 
-## Executing the tool through Docker
+## Executing the tool with Docker compose
 The tool can be build as a Docker image using the following command:
 
 ```shell
-docker build . -t data-injector
+docker build . -t data-injector # Or some other tag for reference later
+```
+
+It can then be started as part of a Docker compose file with the following service definition:
+
+```yaml
+data-injector:
+    image: 'data-injector:latest' # Or the tag used during the build step
+    environment:
+        - REDIS_ADDRESS=redis:6379 # Change to the address of the actual Redis instance
+        - DATA_PATH=/data/data.json # Can be changed to whatever path you want, but remember to update volume as well
+    volumes:
+        - <path-to-JSON-data-file>:/data/data.json # The container path must match the passed 'DATA_PATH' variable
 ```
 
 ## Data Format

@@ -99,15 +99,19 @@ func run(cfg Config) error {
 func pingRedis(ctx context.Context, rdb *redis.Client) error {
 	maxAttempts := 10
 	attempt := 1
-	for attempt < maxAttempts {
+	for attempt <= maxAttempts {
 		if err := rdb.Ping(ctx).Err(); err != nil {
 			fmt.Println(fmt.Errorf("could not connect to Redis: %w", err))
 			time.Sleep(3 * time.Second)
+		} else {
+			break
 		}
 		attempt += 1
 	}
-	if attempt == maxAttempts {
+
+	if attempt > maxAttempts {
 		return fmt.Errorf("unable to connecton to redis at %s", rdb.Options().Addr)
 	}
+
 	return nil
 }
