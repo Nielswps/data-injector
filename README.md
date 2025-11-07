@@ -1,11 +1,15 @@
 # Data Injector
+
 A simplistic tool for injecting static data into different storage solutions, intended for local testing and showcasing.
 
+# Installation
 
 # Usage
+
 The tool can either be used as an executable or as a Docker image.
 
 ## Executing the tool directly
+
 The tool can be executed with the `go run` command. The service needs an endpoint to post the data, so first ensure that a running instance of the target storage solution is running and accessible.
 If you just want to test how the tool works, you can run the following command to inject some data into a Redit cache:
 
@@ -14,6 +18,7 @@ go run . --redis-address=127.0.0.1:6388 --data-file=./example/example_data.json
 ```
 
 ## Executing the tool with Docker compose
+
 The tool can be build as a Docker image using the following command:
 
 ```shell
@@ -24,30 +29,58 @@ It can then be started as part of a Docker compose file with the following servi
 
 ```yaml
 data-injector:
-    image: 'data-injector:latest' # Or the tag used during the build step
-    environment:
-        - REDIS_ADDRESS=redis:6379 # Change to the address of the actual Redis instance
-        - DATA_PATH=/data/data.json # Can be changed to whatever path you want, but remember to update volume as well
-    volumes:
-        - <path-to-JSON-data-file>:/data/data.json # The container path must match the passed 'DATA_PATH' variable
+  image: "data-injector:latest" # Or the tag used during the build step
+  environment:
+    - REDIS_ADDRESS=redis:6379 # Change to the address of the actual Redis instance
+    - DATA_PATH=/data/data.json # Can be changed to whatever path you want, but remember to update volume as well
+  volumes:
+    - <path-to-JSON-data-file>:/data/data.json # The container path must match the passed 'DATA_PATH' variable
 ```
 
 ## Data Format
+
 The format of the data file is expected to be valid JSON and to follow the format below:
+
 ```json
 [
-    {
-        "key": "key_1",
-        "value": "val_1"
-    },
-    {
-        "key": "key_2",
-        "value": {"type": "object", "value": "some data"}
-    },
-    {
-        "key": "key_3",
-        "value": ["element_1", "element_2", "element_3"]
-    }
+  {
+    "key": "key_1",
+    "value": "val_1"
+  },
+  {
+    "key": "key_2",
+    "value": { "type": "object", "value": "some data" }
+  },
+  {
+    "key": "key_3",
+    "value": ["element_1", "element_2", "element_3"]
+  }
 ]
 ```
+
 The content of each "value" is parsed as a JSON value on its own and must therefore be valid JSON as well.
+
+## Tests
+
+The tests can be run with coverage and result report generation using these commands:
+
+```shell
+go test -v -json -coverprofile=coverage.out ./... > test_results.json
+go tool cover -func=coverage.out > coverage.txt
+```
+
+### JUnit XML Test Report
+
+If a JUnit XML test report is wanted, the following can be used:
+
+```shell
+go test -v -coverprofile=coverage.out -json ./... | tee test_results.json | go-junit-report > report.xml && go tool cover -func=coverage.out > coverage.txt && go tool cover -html=coverage.out
+```
+
+This requires the tool to be installed, which can be coned with:
+
+```shell
+go install github.com/jstemmer/go-junit-report/v2@latest
+```
+
+Then ensure that your local `PATH` includes the `/bin` dir containing locally installed Go tools.
