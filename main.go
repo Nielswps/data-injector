@@ -3,9 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 
 	"github.com/joho/godotenv"
 	redis "github.com/redis/go-redis/v9"
@@ -13,8 +18,10 @@ import (
 )
 
 type Config struct {
-	RedisConfigPath string
-	DataPath        string
+	RedisAddress       string
+	DataPath           string
+	PingMaxAttempts    int
+	PingAttemptTimeout time.Duration
 }
 
 type KeyValue struct {
@@ -22,38 +29,33 @@ type KeyValue struct {
 	Value json.RawMessage `json:"value"`
 }
 
+type RedisClient interface {
+	Ping(ctx context.Context) *redis.StatusCmd
+	JSONSet(ctx context.Context, key string, path string, value interface{}) *redis.StatusCmd
+	Close() error
+}
+
 func main() {
+	_ = godotenv.Load()
+
 	var cfg Config
 
-	var rootCmd = &cobra.Command{
+	rootCmd := &cobra.Command{
 		Use:   "data-injector",
-		Short: "A tool to injecting static data into data storage.",
-		Long: `A simplistic tool for injecting static data into different storage solutions, intended for local testing and showcasing.
-Configurations can be provided via environment variables or command-line flags.`,
-		Run: func(cmd *cobra.Command, args []string) {
-			if cfg.RedisConfigPath == "" {
-				cfg.RedisConfigPath = os.Getenv("REDIS_ADDRESS")
+		Short: "Inject static JSON data into various storage solutions.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fillMissingConfigFromEnv(&cfg)
+			if cfg.RedisAddress == "" || cfg.DataPath == "" {
+				return errors.New("redis address and data file path must be specified")
 			}
-			if cfg.DataPath == "" {
-				cfg.DataPath = os.Getenv("DATA_PATH")
-			}
-
-			if cfg.RedisConfigPath == "" || cfg.DataPath == "" {
-				fmt.Println("Error: Redis address and data file path must be specified.")
-				os.Exit(1)
-			}
-
-			if err := run(cfg); err != nil {
-				fmt.Println("Error:", err)
-				os.Exit(1)
-			}
+			return run(context.Background(), cfg, nil)
 		},
 	}
 
-	rootCmd.Flags().StringVarP(&cfg.RedisConfigPath, "redis-address", "r", "", "Address that Redis is reachable at.")
-	rootCmd.Flags().StringVarP(&cfg.DataPath, "data-file", "f", "", "Path to the data to upload (in JSON format).")
-
-	godotenv.Load()
+	rootCmd.Flags().StringVarP(&cfg.RedisAddress, "redis-address", "r", "", "Address of Redis (e.g., localhost:6379)")
+	rootCmd.Flags().StringVarP(&cfg.DataPath, "data-file", "f", "", "Path to JSON file containing data to inject")
+	rootCmd.Flags().IntVar(&cfg.PingMaxAttempts, "ping-max-attempts", 10, "Max ping attempts")
+	rootCmd.Flags().DurationVar(&cfg.PingAttemptTimeout, "ping-attempt-delay", 3*time.Second, "Delay between ping retries")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println("Error:", err)
@@ -61,57 +63,103 @@ Configurations can be provided via environment variables or command-line flags.`
 	}
 }
 
-func run(cfg Config) error {
-	rdb := redis.NewClient(&redis.Options{
-		Addr: cfg.RedisConfigPath,
-	})
+func fillMissingConfigFromEnv(cfg *Config) {
+	if cfg.RedisAddress == "" {
+		cfg.RedisAddress = os.Getenv("REDIS_ADDRESS")
+	}
+	if cfg.DataPath == "" {
+		cfg.DataPath = os.Getenv("DATA_PATH")
+	}
+	if cfg.PingMaxAttempts == 0 {
+		if v := os.Getenv("PING_MAX_ATTEMPTS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				cfg.PingMaxAttempts = n
+			}
+		} else {
+			cfg.PingMaxAttempts = 10
+		}
+	}
+	if cfg.PingAttemptTimeout == 0 {
+		if v := os.Getenv("PING_ATTEMPT_TIMEOUT"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				cfg.PingAttemptTimeout = d
+			}
+		} else {
+			cfg.PingAttemptTimeout = 3 * time.Second
+		}
+	}
+}
 
-	ctx := context.Background()
+func run(ctx context.Context, cfg Config, client RedisClient) error {
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
 
-	err := pingRedis(ctx, rdb)
-	if err != nil {
-		return fmt.Errorf("could not ping redis at: '%s' after retries. Failing", cfg.RedisConfigPath)
+	if client == nil {
+		client = redis.NewClient(&redis.Options{Addr: cfg.RedisAddress})
+		defer client.Close()
 	}
 
-	fmt.Println("Successfully connected to Redis!")
+	log.Info().Str("redis_addr", cfg.RedisAddress).Msg("Connecting to Redis")
+	if err := pingRedis(ctx, client, cfg.PingMaxAttempts, cfg.PingAttemptTimeout); err != nil {
+		return err
+	}
+	log.Info().Msg("Connected to Redis")
 
 	data, err := os.ReadFile(cfg.DataPath)
 	if err != nil {
+		log.Error().Err(err).Str("path", cfg.DataPath).Msg("Failed to read JSON file")
 		return fmt.Errorf("could not read JSON file: %w", err)
 	}
 
-	var jsonData []KeyValue
-	if err := json.Unmarshal(data, &jsonData); err != nil {
-		return fmt.Errorf("could not unmarshal JSON data: %w", err)
+	var records []KeyValue
+	if err := json.Unmarshal(data, &records); err != nil {
+		log.Error().Err(err).Msg("Invalid JSON structure")
+		return fmt.Errorf("could not unmarshal JSON: %w", err)
 	}
 
-	for _, item := range jsonData {
-		if err := rdb.JSONSet(ctx, item.Key, ".", item.Value).Err(); err != nil {
-			return fmt.Errorf("failed to set key '%s' in Redis: %w", item.Key, err)
+	log.Info().Int("records", len(records)).Msg("Starting data injection")
+
+	for _, kv := range records {
+		if kv.Key == "" {
+			log.Error().Interface("record", kv).Msg("Missing key in record")
+			return fmt.Errorf("missing key in record: %v", kv)
 		}
-		fmt.Printf("Wrote key '%s' as JSON to Redis.\n", item.Key)
+
+		if err := client.JSONSet(ctx, kv.Key, ".", kv.Value).Err(); err != nil {
+			log.Error().Err(err).Str("key", kv.Key).Msg("Failed to write key")
+			return fmt.Errorf("failed to set key '%s': %w", kv.Key, err)
+		}
+
+		log.Info().Str("key", kv.Key).Msg("Wrote JSON key")
 	}
 
-	fmt.Println("Data successfully written to Redis as JSON.")
+	log.Info().Msg("All data successfully written to Redis")
 	return nil
 }
 
-func pingRedis(ctx context.Context, rdb *redis.Client) error {
-	maxAttempts := 10
+func pingRedis(ctx context.Context, client RedisClient, maxAttempts int, retryDelay time.Duration) error {
 	attempt := 1
-	for attempt <= maxAttempts {
-		if err := rdb.Ping(ctx).Err(); err != nil {
-			fmt.Println(fmt.Errorf("could not connect to Redis: %w", err))
-			time.Sleep(3 * time.Second)
-		} else {
-			break
+	delay := retryDelay
+
+	for {
+		err := client.Ping(ctx).Err()
+		if err == nil {
+			log.Info().
+				Int("attempt", attempt).
+				Msg("Successfully connected to Redis")
+			return nil
 		}
-		attempt += 1
-	}
 
-	if attempt > maxAttempts {
-		return fmt.Errorf("unable to connecton to redis at %s", rdb.Options().Addr)
-	}
+		log.Warn().
+			Err(err).
+			Int("attempt", attempt).
+			Msg("Failed to connect to Redis, retrying...")
 
-	return nil
+		if attempt >= maxAttempts {
+			return fmt.Errorf("unable to connect to Redis after %d attempts: %w", attempt, err)
+		}
+
+		time.Sleep(delay)
+		delay *= 2 // exponential backoff
+		attempt++
+	}
 }
